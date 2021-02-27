@@ -1,3 +1,5 @@
+#![allow(unused_imports, unused_variables)] //remove this in end and clean up
+
 extern crate reqwest;
 extern crate serde;
 extern crate websocket;
