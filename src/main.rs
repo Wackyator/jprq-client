@@ -2,16 +2,21 @@
 
 extern crate reqwest;
 extern crate serde;
-extern crate websocket;
 extern crate openssl;
 extern crate url;
+extern crate base64;
+extern crate tokio_tungstenite;
 
 use serde::{Serialize, Deserialize};
 use url::Url;
+use std::collections::HashMap;
+use tokio_tungstenite::WebSocketStream;
+use tokio::io::{AsyncRead, AsyncWrite};
+use reqwest::{Method, header::HeaderMap};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
+    Ok(())
 }
 
 struct Client {
@@ -31,35 +36,41 @@ impl Client {
 }
 
 impl Client {
-    async fn process<T>(&self, msg: Message, websocket: T) { //change frm generic to concrete type later
-        let url = Url::parse(&self.base_uri).join(&msg.url);
+    async fn process<S: AsyncRead + AsyncWrite + Unpin>(&self, msg: Message, websocket: WebSocketStream<S>) { //change frm generic to concrete type later
+        let url = Url::parse(&self.base_uri).unwrap().join(&msg.url).unwrap(); 
 
-        let resp: self.http_client.request(&msg.method, url)
-            .headers(&msg.header)
+        let resp = self.http_client.request(Method::from_bytes(&msg.method.as_bytes()).unwrap(), url) //do it more gracefully
             .json(&msg.body)
             .send()
             .await
-            .json::<HashMap<String, String>>()
-            .await;
+            .unwrap();
 
-        if resp.status() < 400 {
-            let resp = ResponseObject::new(msg.id, self.token, resp.status(), resp.headers().into(), resp);
-            //send the response to server with the socket stream
+        let status = resp.status().as_u16();
+        let mut headers = HashMap::new();
+        for (k, v) in resp.headers().iter() {
+            headers.insert(k.clone().to_string(), v.clone().to_str().unwrap().to_owned());
         }
-        
+        let bytes = resp.bytes().await.unwrap(); //probably should do something more elelgent
+
+        if status < 400 {
+            let resp = ResponseObject::new(msg.id, self.token.clone(), status, headers, &bytes);
+        } else {
+            let resp = ResponseObject::new(msg.id, self.token.clone(), 500u16, HashMap::new(), &bytes);
+        }
+        //send response back with the socket stream
         todo!();
 
     }
 }
 
-struct Tunnel<T> { //replace generic with concrete type for websocket
+struct Tunnel<S> { 
     ws_uri: String,
     http_uri: String,
     client: Option<Client>,
-    ws_client: Option<T>,
+    ws_client: Option<WebSocketStream<S>>,
 }
 
-impl Tunnel {
+impl<S> Tunnel<S> {
     fn new(ws_uri: String, http_uri: String) -> Self {
         Self {
             ws_uri,
@@ -70,9 +81,10 @@ impl Tunnel {
     }
 }
 
-impl Tunnel {
+impl<S> Tunnel<S> {
     async fn open_tunnel(&mut self) {
-        self.client = Client::new(self.http_uri, token);
+        let token = "";
+        self.client = Client::new(self.http_uri, token.into());
         loop {
             todo!();
         }
@@ -84,8 +96,7 @@ struct Message {
     id: String,
     method: String,
     url: String,
-    header: Option<HashMap<String, String>>,
-    body: Option<HashMap<String, String>>,
+    body: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -100,17 +111,17 @@ struct ResponseObject {
     token: String,
     status: u16,
     header: HashMap<String, String>,
-    body: HashMap<String, String>,
+    body: String,
 }
 
 impl ResponseObject {
-    fn new(request_id: String, token: String, status: u16, header: HashMap<String, String>, body: HashMap<String, String>) -> Self {
+    fn new<T: AsRef<[u8]>>(request_id: String, token: String, status: u16, header: HashMap<String, String>, body: T) -> Self {
         Self {
             request_id,
             token,
             status,
             header,
-            body,
+            body: base64::encode(body),
         }
     }
 }
